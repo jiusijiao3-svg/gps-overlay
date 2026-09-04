@@ -61,8 +61,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 1
-                versionName = "1.0"
+                versionCode = 2
+                versionName = "1.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -76,7 +76,6 @@ jobs:
             implementation("androidx.core:core-ktx:1.12.0")
             implementation("androidx.appcompat:appcompat:1.6.1")
             implementation("com.google.android.material:material:1.11.0")
-            implementation("com.google.android.gms:play-services-location:21.2.0")
         }
         EOF
 
@@ -125,7 +124,6 @@ jobs:
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-            <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
             <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
@@ -163,10 +161,7 @@ jobs:
         import androidx.core.content.ContextCompat
 
         class MainActivity : AppCompatActivity() {
-            private val permissions = mutableListOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ).apply {
+            private val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION).apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     add(Manifest.permission.POST_NOTIFICATIONS)
                 }
@@ -177,7 +172,7 @@ jobs:
                 if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
                     checkOverlayAndLaunch()
                 } else {
-                    Toast.makeText(this, "位置情報の許可が必要です", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "高精度位置情報の許可が必要です", Toast.LENGTH_SHORT).show()
                     finish()
                 }
             }
@@ -214,22 +209,32 @@ jobs:
         import android.content.res.ColorStateList
         import android.graphics.Color
         import android.graphics.PixelFormat
+        import android.location.Location
+        import android.location.LocationListener
+        import android.location.LocationManager
         import android.os.*
         import android.view.*
         import android.widget.TextView
         import androidx.core.app.NotificationCompat
-        import com.google.android.gms.location.*
 
-        class OverlayService : Service() {
+        class OverlayService : Service(), LocationListener {
             private lateinit var windowManager: WindowManager
             private lateinit var overlayView: View
             private lateinit var statusCircle: View
             private lateinit var accuracyText: TextView
-            private lateinit var fusedLocationClient: FusedLocationProviderClient
-            private lateinit var locationCallback: LocationCallback
+            private lateinit var locationManager: LocationManager
             private val accuracyThreshold = 5.0f
 
             override fun onBind(intent: Intent?): IBinder? = null
+
+            override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                if (intent?.action == "ACTION_STOP") {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
+            }
+
             override fun onCreate() {
                 super.onCreate()
                 startNotification()
@@ -254,7 +259,10 @@ jobs:
                     when (event.action) {
                         MotionEvent.ACTION_DOWN -> {
                             val now = System.currentTimeMillis()
-                            if (now - lastTap < 300) { stopSelf(); return@setOnTouchListener true }
+                            if (now - lastTap < 350) {
+                                stopSelf()
+                                return@setOnTouchListener true
+                            }
                             lastTap = now
                             initX = params.x; initY = params.y
                             touchX = event.rawX; touchY = event.rawY
@@ -270,45 +278,56 @@ jobs:
                     }
                 }
                 windowManager.addView(overlayView, params)
-                startLocation()
+                startRawGps()
             }
 
-            private fun startLocation() {
-                fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-                val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
-                    .setMinUpdateIntervalMillis(500).build()
-
-                locationCallback = object : LocationCallback() {
-                    override fun onLocationResult(result: LocationResult) {
-                        val loc = result.lastLocation ?: return
-                        val acc = loc.accuracy
-                        accuracyText.text = "±${acc.toInt()}m"
-                        if (acc <= accuracyThreshold) {
-                            statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#00E676"))
-                        } else {
-                            statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF1744"))
-                        }
-                    }
-                }
+            private fun startRawGps() {
+                locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
                 try {
-                    fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+                    // ハードウェアGPSチップから直接生データを取得 (500ms間隔, 移動距離0mから検知)
+                    locationManager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER,
+                        500L,
+                        0f,
+                        this,
+                        Looper.getMainLooper()
+                    )
                 } catch (e: SecurityException) {}
+            }
+
+            override fun onLocationChanged(loc: Location) {
+                if (!loc.hasAccuracy()) return
+                val acc = loc.accuracy
+                accuracyText.text = "±${acc.toInt()}m"
+                if (acc <= accuracyThreshold) {
+                    statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#00E676"))
+                } else {
+                    statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF1744"))
+                }
             }
 
             private fun startNotification() {
                 val chId = "gps_overlay"
                 val ch = NotificationChannel(chId, "GPS Overlay", NotificationManager.IMPORTANCE_LOW)
                 getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+
+                val stopIntent = Intent(this, OverlayService::class.java).apply { action = "ACTION_STOP" }
+                val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+
                 val notif = NotificationCompat.Builder(this, chId)
                     .setContentTitle("GPSモニター稼働中")
+                    .setContentText("ダブルタップ、または下のボタンで終了")
                     .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                    .addAction(android.R.drawable.ic_menu_close_clear_cancel, "終了する", stopPendingIntent)
+                    .setOngoing(true)
                     .build()
+
                 startForeground(1, notif)
             }
 
             override fun onDestroy() {
                 super.onDestroy()
-                if (::fusedLocationClient.isInitialized) fusedLocationClient.removeLocationUpdates(locationCallback)
+                if (::locationManager.isInitialized) locationManager.removeUpdates(this)
                 if (::overlayView.isInitialized) windowManager.removeView(overlayView)
             }
         }
