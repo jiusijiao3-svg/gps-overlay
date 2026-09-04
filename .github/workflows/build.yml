@@ -61,8 +61,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 2
-                versionName = "1.1"
+                versionCode = 3
+                versionName = "1.2"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -131,10 +131,20 @@ jobs:
             <application
                 android:label="GPS Overlay"
                 android:theme="@style/Theme.AppCompat.Light.NoActionBar">
-                <activity android:name=".MainActivity" android:exported="true">
+                <activity
+                    android:name=".MainActivity"
+                    android:exported="true"
+                    android:showWhenLocked="true"
+                    android:turnScreenOn="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
                         <category android:name="android.intent.category.LAUNCHER" />
+                    </intent-filter>
+                    <!-- ロック画面・通常画面双方のカメラショートカットに登録 -->
+                    <intent-filter>
+                        <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
+                        <action android:name="android.media.action.STILL_IMAGE_CAMERA_SECURE" />
+                        <category android:name="android.intent.category.DEFAULT" />
                     </intent-filter>
                 </activity>
                 <service
@@ -155,6 +165,7 @@ jobs:
         import android.os.Bundle
         import android.provider.MediaStore
         import android.provider.Settings
+        import android.view.WindowManager
         import android.widget.Toast
         import androidx.activity.result.contract.ActivityResultContracts
         import androidx.appcompat.app.AppCompatActivity
@@ -178,6 +189,16 @@ jobs:
             }
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    setShowWhenLocked(true)
+                    setTurnScreenOn(true)
+                } else {
+                    @Suppress("DEPRECATION")
+                    window.addFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    )
+                }
                 val allGranted = permissions.all {
                     ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
                 }
@@ -192,10 +213,26 @@ jobs:
                     return
                 }
                 startForegroundService(Intent(this, OverlayService::class.java))
-                val cameraIntent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
+
+                // ロック状態に応じてPixel純正カメラを呼び出す
+                val isSecure = intent?.action == "android.media.action.STILL_IMAGE_CAMERA_SECURE"
+                val cameraAction = if (isSecure) {
+                    "android.media.action.STILL_IMAGE_CAMERA_SECURE"
+                } else {
+                    MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA
+                }
+
+                val cameraIntent = Intent(cameraAction).apply {
+                    setPackage("com.google.android.GoogleCamera")
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-                startActivity(cameraIntent)
+
+                try {
+                    startActivity(cameraIntent)
+                } catch (e: Exception) {
+                    val fallback = Intent(cameraAction).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                    startActivity(fallback)
+                }
                 finish()
             }
         }
@@ -243,11 +280,13 @@ jobs:
                 statusCircle = overlayView.findViewById(R.id.status_circle)
                 accuracyText = overlayView.findViewById(R.id.accuracy_text)
 
+                @Suppress("DEPRECATION")
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.START
@@ -284,7 +323,6 @@ jobs:
             private fun startRawGps() {
                 locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
                 try {
-                    // ハードウェアGPSチップから直接生データを取得 (500ms間隔, 移動距離0mから検知)
                     locationManager.requestLocationUpdates(
                         LocationManager.GPS_PROVIDER,
                         500L,
