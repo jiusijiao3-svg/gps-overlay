@@ -22,7 +22,297 @@ jobs:
         cache-disabled: true
 
     - name: Generate Source Files
-      run: python3 -c "import base64, gzip; exec(gzip.decompress(base64.b64decode('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')))"
+      run: |
+        mkdir -p app/src/main/java/com/example/gpsoverlay
+        mkdir -p app/src/main/res/layout
+        mkdir -p app/src/main/res/drawable
+        mkdir -p app/src/main/res/values
+
+        echo "android.useAndroidX=true" > gradle.properties
+
+        cat << 'EOF' > settings.gradle
+        pluginManagement {
+            repositories { google(); mavenCentral(); gradlePluginPortal() }
+        }
+        dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories { google(); mavenCentral() }
+        }
+        rootProject.name = "GpsOverlay"
+        include(":app")
+        EOF
+
+        cat << 'EOF' > build.gradle
+        plugins {
+            id("com.android.application") version "8.2.2" apply false
+            id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+        }
+        EOF
+
+        cat << 'EOF' > app/build.gradle
+        plugins {
+            id("com.android.application")
+            id("org.jetbrains.kotlin.android")
+        }
+        android {
+            namespace = "com.example.gpsoverlay"
+            compileSdk = 34
+            defaultConfig {
+                applicationId = "com.example.gpsoverlay"
+                minSdk = 26
+                targetSdk = 34
+                versionCode = 1
+                versionName = "1.0"
+            }
+            compileOptions {
+                sourceCompatibility = JavaVersion.VERSION_17
+                targetCompatibility = JavaVersion.VERSION_17
+            }
+            kotlinOptions {
+                jvmTarget = "17"
+            }
+        }
+        dependencies {
+            implementation("androidx.core:core-ktx:1.12.0")
+            implementation("androidx.appcompat:appcompat:1.6.1")
+            implementation("com.google.android.material:material:1.11.0")
+            implementation("com.google.android.gms:play-services-location:21.2.0")
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/res/values/strings.xml
+        <resources><string name="app_name">GPS Overlay</string></resources>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/drawable/circle_shape.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+            <solid android:color="#FF0000" />
+            <size android:width="28dp" android:height="28dp" />
+        </shape>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/layout/overlay_view.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:padding="8dp">
+            <View
+                android:id="@+id/status_circle"
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:background="@drawable/circle_shape" />
+            <TextView
+                android:id="@+id/accuracy_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:text="測位中..."
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:shadowColor="#000000"
+                android:shadowDx="1"
+                android:shadowDy="1"
+                android:shadowRadius="3" />
+        </LinearLayout>
+        EOF
+
+        cat << 'EOF' > app/src/main/AndroidManifest.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+            <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+            <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+            <application
+                android:label="GPS Overlay"
+                android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+                <activity android:name=".MainActivity" android:exported="true">
+                    <intent-filter>
+                        <action android:name="android.intent.action.MAIN" />
+                        <category android:name="android.intent.category.LAUNCHER" />
+                    </intent-filter>
+                </activity>
+                <service
+                    android:name=".OverlayService"
+                    android:foregroundServiceType="location"
+                    android:exported="false" />
+            </application>
+        </manifest>
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/example/gpsoverlay/MainActivity.kt
+        package com.example.gpsoverlay
+        import android.Manifest
+        import android.content.Intent
+        import android.content.pm.PackageManager
+        import android.net.Uri
+        import android.os.Build
+        import android.os.Bundle
+        import android.provider.MediaStore
+        import android.provider.Settings
+        import android.widget.Toast
+        import androidx.activity.result.contract.ActivityResultContracts
+        import androidx.appcompat.app.AppCompatActivity
+        import androidx.core.content.ContextCompat
+
+        class MainActivity : AppCompatActivity() {
+            private val permissions = mutableListOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ).apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+            private val permissionLauncher = registerForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions()
+            ) { grants ->
+                if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+                    checkOverlayAndLaunch()
+                } else {
+                    Toast.makeText(this, "位置情報の許可が必要です", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            }
+            override fun onCreate(savedInstanceState: Bundle?) {
+                super.onCreate(savedInstanceState)
+                val allGranted = permissions.all {
+                    ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+                }
+                if (allGranted) checkOverlayAndLaunch() else permissionLauncher.launch(permissions.toTypedArray())
+            }
+            private fun checkOverlayAndLaunch() {
+                if (!Settings.canDrawOverlays(this)) {
+                    Toast.makeText(this, "「他のアプリの上に重ねて表示」を許可してください", Toast.LENGTH_LONG).show()
+                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                    startActivity(intent)
+                    finish()
+                    return
+                }
+                startForegroundService(Intent(this, OverlayService::class.java))
+                val cameraIntent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(cameraIntent)
+                finish()
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/example/gpsoverlay/OverlayService.kt
+        package com.example.gpsoverlay
+        import android.app.*
+        import android.content.Context
+        import android.content.Intent
+        import android.content.res.ColorStateList
+        import android.graphics.Color
+        import android.graphics.PixelFormat
+        import android.os.*
+        import android.view.*
+        import android.widget.TextView
+        import androidx.core.app.NotificationCompat
+        import com.google.android.gms.location.*
+
+        class OverlayService : Service() {
+            private lateinit var windowManager: WindowManager
+            private lateinit var overlayView: View
+            private lateinit var statusCircle: View
+            private lateinit var accuracyText: TextView
+            private lateinit var fusedLocationClient: FusedLocationProviderClient
+            private lateinit var locationCallback: LocationCallback
+            private val accuracyThreshold = 5.0f
+
+            override fun onBind(intent: Intent?): IBinder? = null
+            override fun onCreate() {
+                super.onCreate()
+                startNotification()
+                windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_view, null)
+                statusCircle = overlayView.findViewById(R.id.status_circle)
+                accuracyText = overlayView.findViewById(R.id.accuracy_text)
+
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.START
+                    x = 100; y = 200
+                }
+
+                var initX = 0; var initY = 0; var touchX = 0f; var touchY = 0f; var lastTap = 0L
+                overlayView.setOnTouchListener { _, event ->
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            val now = System.currentTimeMillis()
+                            if (now - lastTap < 300) { stopSelf(); return@setOnTouchListener true }
+                            lastTap = now
+                            initX = params.x; initY = params.y
+                            touchX = event.rawX; touchY = event.rawY
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            params.x = initX + (event.rawX - touchX).toInt()
+                            params.y = initY + (event.rawY - touchY).toInt()
+                            windowManager.updateViewLayout(overlayView, params)
+                            true
+                        }
+                        else -> false
+                    }
+                }
+                windowManager.addView(overlayView, params)
+                startLocation()
+            }
+
+            private fun startLocation() {
+                fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+                val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
+                    .setMinUpdateIntervalMillis(500).build()
+
+                locationCallback = object : LocationCallback() {
+                    override fun onLocationResult(result: LocationResult) {
+                        val loc = result.lastLocation ?: return
+                        val acc = loc.accuracy
+                        accuracyText.text = "±${acc.toInt()}m"
+                        if (acc <= accuracyThreshold) {
+                            statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#00E676"))
+                        } else {
+                            statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF1744"))
+                        }
+                    }
+                }
+                try {
+                    fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+                } catch (e: SecurityException) {}
+            }
+
+            private fun startNotification() {
+                val chId = "gps_overlay"
+                val ch = NotificationChannel(chId, "GPS Overlay", NotificationManager.IMPORTANCE_LOW)
+                getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+                val notif = NotificationCompat.Builder(this, chId)
+                    .setContentTitle("GPSモニター稼働中")
+                    .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                    .build()
+                startForeground(1, notif)
+            }
+
+            override fun onDestroy() {
+                super.onDestroy()
+                if (::fusedLocationClient.isInitialized) fusedLocationClient.removeLocationUpdates(locationCallback)
+                if (::overlayView.isInitialized) windowManager.removeView(overlayView)
+            }
+        }
+        EOF
 
     - name: Build APK with Gradle
       run: gradle assembleDebug
