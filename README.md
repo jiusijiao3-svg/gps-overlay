@@ -1,8 +1,15 @@
-# gps-overlay
 # GPS Overlay for Android
 
-Pixel 7a などの Android 端末向けに開発した、純正カメラ起動連動型の高精度 GPS 浮遊モニターアプリです。  
+Pixel 7a などの Android 端末向けに開発した、純正カメラ連動型の高精度 GPS 浮遊モニターアプリです。  
 Google のブレンド測位（Fused Location）を介さず、ハードウェア GNSS チップから直接生データを取得することで、`GPSTEST` 等と同等のリアルタイム測位精度（±m）を画面上に常時表示します。
+
+---
+
+## 開発の目的
+
+スマートフォン標準の純正カメラアプリでは、撮影時に GPS 衛星を十分に捕捉できているかが画面上から判別できません。そのため、測位が甘い状態のままシャッターを切り、撮影後の Exif 位置情報が数十メートル以上大きくズレて記録されてしまう問題が頻繁に発生します。
+
+本アプリは、カメラ画面上に高精度な生測位ステータス（誤差メーター数と合致判定カラー）をリアルタイムでオーバーレイ表示し、**「確実に高精度な測位が完了した瞬間を見極めてシャッターを切る」** ことを可能にするために開発しました。
 
 ---
 
@@ -39,9 +46,9 @@ Google のブレンド測位（Fused Location）を介さず、ハードウェ�
 本アプリは野良 APK（サイドロード）としてインストールするため、Android のセキュリティ機能により「他のアプリの上に重ねて表示」の権限が初期状態で制限されます。
 
 1. **設定** → **アプリ** → **GPS Overlay** を開く。
-2. 右上の **「︙（メニュー）」** から **「制限付き設定を許可」** をタップして生体認証または PIN を通す。
+2. 右上の **「︙（メニュー）」** から **「制限付き設定を許可」** をタップして認証を通す。
 3. **「他のアプリの上に重ねて表示」** を **ON** に変更する。
-4. 位置情報の権限を **「アプリの使用中のみ許可」**（または常に許可）にし、**「正確な位置情報の使用」** を有効にする。
+4. 位置情報の権限を **「正確な位置情報の使用」** を有効にして許可する。
 
 ---
 
@@ -49,3 +56,65 @@ Google のブレンド測位（Fused Location）を介さず、ハードウェ�
 
 * **移動**: インジケーターをドラッグ
 * **終了**: インジケーターをダブルタップ、または通知バーの「終了する」をタップ
+
+---
+---
+
+# GPS Overlay for Android (English)
+
+A high-precision floating GPS monitor app designed for Android devices (optimized for Google Pixel 7a), integrated seamlessly with the stock camera interface.  
+By bypassing Google's Fused Location Provider and fetching raw data directly from the hardware GNSS receiver, it displays real-time satellite accuracy (±m) matching dedicated diagnostic tools like `GPSTEST`.
+
+---
+
+## Motivation & Purpose
+
+Stock smartphone camera apps offer no visual feedback indicating whether GNSS satellites are sufficiently locked before capturing a photo. As a result, photos are often taken while the position fix is still coarse, leading to recorded geotag metadata (Exif) being inaccurate by dozens of meters.
+
+This application solves that problem by rendering a lightweight floating indicator directly over the camera viewfinder. By displaying real-time accuracy and dynamic color coding, users can **verify pinpoint accuracy before pressing the shutter button**, ensuring flawless geotagging.
+
+---
+
+## Key Features
+
+* **Direct Hardware GNSS Access**
+  * Utilizes `LocationManager.GPS_PROVIDER` directly, eliminating Wi-Fi/cellular triangulation approximations and updating raw satellite accuracy every 500ms.
+  * Real-time status indicator changes color dynamically: Green for ≤ 5m error, Red for > 5m error.
+* **Movable Floating Overlay**
+  * Freely draggable to any position on screen to avoid obstructing camera controls.
+  * Quick double-tap anywhere on the indicator instantly stops and dismisses the overlay.
+* **Sleep-Resistant Foreground Service**
+  * Runs as a persistent Foreground Service, retaining satellite lock even while the screen is off.
+  * Launching before heading into the field allows instantaneous, zero-latency geotagging directly from the lock screen.
+  * Quick-stop action button integrated into the persistent notification tray.
+* **Camera Launch Integration**
+  * Automatically invokes the stock Google Camera app upon service initiation.
+
+---
+
+## Build Environment
+
+Constructed to build entirely within GitHub Actions CI/CD workflows without requiring a local Android Studio development suite.
+
+* **Language**: Kotlin
+* **Target SDK**: compileSdk 34 / minSdk 26
+* **Build Tooling**: Gradle 8.4, AGP 8.2.2
+* **CI/CD Platform**: GitHub Actions (`ubuntu-latest` / Temurin JDK 17)
+
+---
+
+## Installation Notes (Android 13+ / Pixel)
+
+Because this app is side-loaded via APK, Android applies restricted settings by default.
+
+1. Navigate to **Settings** → **Apps** → **GPS Overlay**.
+2. Tap the **three-dot menu (⋮)** in the top right corner and select **Allow restricted settings**, then authenticate with PIN/biometrics.
+3. Enable **Display over other apps**.
+4. Grant Location permission with **Use precise location** enabled.
+
+---
+
+## Usage
+
+* **Reposition**: Drag and drop the status bubble.
+* **Dismiss**: Double-tap the indicator, or tap **Exit** in the notification shade.
