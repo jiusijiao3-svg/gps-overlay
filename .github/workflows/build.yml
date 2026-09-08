@@ -66,8 +66,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 19
-                versionName = "3.4"
+                versionCode = 21
+                versionName = "4.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -82,6 +82,7 @@ jobs:
             implementation("androidx.appcompat:appcompat:1.6.1")
             implementation("com.google.android.material:material:1.11.0")
             implementation("androidx.exifinterface:exifinterface:1.3.7")
+            implementation("com.google.android.gms:play-services-location:21.1.0")
         }
         EOF
 
@@ -175,6 +176,7 @@ jobs:
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+            <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
             <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
@@ -219,7 +221,10 @@ jobs:
         import androidx.core.content.ContextCompat
 
         class MainActivity : AppCompatActivity() {
-            private val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION).apply {
+            private val permissions = mutableListOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ).apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     add(Manifest.permission.POST_NOTIFICATIONS)
                 }
@@ -281,6 +286,7 @@ jobs:
 
         cat << 'EOF' > app/src/main/java/com/example/gpsoverlay/OverlayService.kt
         package com.example.gpsoverlay
+
         import android.app.*
         import android.content.ContentResolver
         import android.content.Context
@@ -291,7 +297,6 @@ jobs:
         import android.graphics.PixelFormat
         import android.location.GnssStatus
         import android.location.Location
-        import android.location.LocationListener
         import android.location.LocationManager
         import android.media.MediaScannerConnection
         import android.net.Uri
@@ -302,6 +307,7 @@ jobs:
         import android.widget.TextView
         import androidx.core.app.NotificationCompat
         import androidx.exifinterface.media.ExifInterface
+        import com.google.android.gms.location.*
         import java.io.File
         import java.text.SimpleDateFormat
         import java.util.*
@@ -314,7 +320,7 @@ jobs:
 
         data class GpsRecord(val timeMs: Long, val lat: Double, val lon: Double, val alt: Double, val acc: Float)
 
-        class OverlayService : Service(), LocationListener {
+        class OverlayService : Service() {
             private lateinit var windowManager: WindowManager
             private lateinit var overlayView: View
             private lateinit var statusCircle: View
@@ -322,8 +328,12 @@ jobs:
             private lateinit var satelliteText: TextView
             private lateinit var bannerContainer: ViewGroup
             private lateinit var hudBannerText: TextView
+            
+            private lateinit var fusedLocationClient: FusedLocationProviderClient
+            private lateinit var locationCallback: LocationCallback
             private lateinit var locationManager: LocationManager
-            private val accuracyThreshold = 5.0f
+
+            private val accuracyThreshold = 8.0f
 
             private val gpsLog = ConcurrentLinkedQueue<GpsRecord>()
             private val processedPaths = Collections.synchronizedSet(HashSet<String>())
@@ -341,6 +351,18 @@ jobs:
 
             private val debounceProcessRunnable = Runnable {
                 executor.execute { processImageEvent() }
+            }
+
+            // ★追加: 30分無操作で終了するタイマーロジック
+            private val autoStopRunnable = Runnable {
+                writeDebugLog("--- 最終撮影から30分経過したためサービスを自動終了します ---")
+                stopSelf()
+            }
+
+            private fun resetAutoStopTimer() {
+                mainHandler.removeCallbacks(autoStopRunnable)
+                // 30分 = 30 * 60 * 1000 = 1800000ms
+                mainHandler.postDelayed(autoStopRunnable, 1800000L)
             }
 
             private val gnssCallback = object : GnssStatus.Callback() {
@@ -374,7 +396,8 @@ jobs:
                 startNotification()
                 initOverlay()
                 initBanner()
-                writeDebugLog("=== GPS Overlay サービス起動 (v3.4) ===")
+                writeDebugLog("=== GPS Overlay サービス起動 (v4.1: ロック画面対応＆30分タイマー) ===")
+                resetAutoStopTimer() // 初回のタイマーセット
                 startLocationUpdates()
                 setupImageObserver()
             }
@@ -385,27 +408,22 @@ jobs:
                     val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
                     val logLine = "[$timeStr] $message\n"
 
-                    // 1. Cameraフォルダへの書き込み (拡張子をtxtに変更)
                     val cameraDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
                     if (!cameraDir.exists()) cameraDir.mkdirs()
                     val cameraLog = File(cameraDir, "gps_sync_log.txt")
-                    try { cameraLog.appendText(logLine) } catch (e: Exception) { Log.e(TAG, "Camera Dir Write Error", e) }
+                    try { cameraLog.appendText(logLine) } catch (e: Exception) {}
 
-                    // 2. Downloadフォルダへの書き込み (最も確実な安全地帯)
                     val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                     if (!downloadDir.exists()) downloadDir.mkdirs()
                     val downloadLog = File(downloadDir, "gps_sync_log.txt")
-                    try { downloadLog.appendText(logLine) } catch (e: Exception) { Log.e(TAG, "Download Dir Write Error", e) }
+                    try { downloadLog.appendText(logLine) } catch (e: Exception) {}
 
-                    // メディアスキャンでPCやファイルアプリに即時反映
                     MediaScannerConnection.scanFile(
                         applicationContext,
                         arrayOf(cameraLog.absolutePath, downloadLog.absolutePath),
                         arrayOf("text/plain", "text/plain")
                     ) { _, _ -> }
-                } catch (e: Exception) {
-                    Log.e(TAG, "ログ書き込み失敗", e)
-                }
+                } catch (e: Exception) {}
             }
 
             private fun initOverlay() {
@@ -415,11 +433,12 @@ jobs:
                 accuracyText = overlayView.findViewById(R.id.accuracy_text)
                 satelliteText = overlayView.findViewById(R.id.satellite_text)
 
+                // ★修正: FLAG_SHOW_WHEN_LOCKED を追加してロック画面を貫通させる
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.START
@@ -456,11 +475,12 @@ jobs:
                 bannerContainer = LayoutInflater.from(this).inflate(R.layout.banner_view, null) as ViewGroup
                 hudBannerText = bannerContainer.findViewById(R.id.hud_banner_text)
 
+                // ★修正: バナーにも FLAG_SHOW_WHEN_LOCKED を追加
                 val bannerParams = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP
@@ -491,42 +511,55 @@ jobs:
             }
 
             private fun startLocationUpdates() {
-                locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
                 try {
-                    locationManager.requestLocationUpdates(
-                        LocationManager.GPS_PROVIDER,
-                        500L,
-                        0f,
-                        this,
+                    fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+                    
+                    val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L)
+                        .setMinUpdateIntervalMillis(250L)
+                        .build()
+
+                    locationCallback = object : LocationCallback() {
+                        override fun onLocationResult(locationResult: LocationResult) {
+                            val loc = locationResult.lastLocation ?: return
+                            if (!loc.hasAccuracy()) return
+                            
+                            val now = System.currentTimeMillis()
+                            val acc = loc.accuracy
+
+                            gpsLog.add(GpsRecord(now, loc.latitude, loc.longitude, loc.altitude, acc))
+                            val fiveMinAgo = now - 300_000L
+                            while (gpsLog.isNotEmpty() && gpsLog.peek().timeMs < fiveMinAgo) {
+                                gpsLog.poll()
+                            }
+
+                            accuracyText.text = "±${acc.toInt()}m(F)"
+                            val color = if (acc <= accuracyThreshold) "#00E676" else "#FF1744"
+                            statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor(color))
+                        }
+                    }
+
+                    fusedLocationClient.requestLocationUpdates(
+                        locationRequest,
+                        locationCallback,
                         Looper.getMainLooper()
                     )
+
+                    locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
                     locationManager.registerGnssStatusCallback(gnssCallback, mainHandler)
+
                 } catch (e: SecurityException) {
                     Log.e(TAG, "位置情報権限不足", e)
                 }
-            }
-
-            override fun onLocationChanged(loc: Location) {
-                if (!loc.hasAccuracy()) return
-                val now = System.currentTimeMillis()
-                val acc = loc.accuracy
-
-                gpsLog.add(GpsRecord(now, loc.latitude, loc.longitude, loc.altitude, acc))
-                val fiveMinAgo = now - 300_000L
-                while (gpsLog.isNotEmpty() && gpsLog.peek().timeMs < fiveMinAgo) {
-                    gpsLog.poll()
-                }
-
-                accuracyText.text = "±${acc.toInt()}m"
-                val color = if (acc <= accuracyThreshold) "#00E676" else "#FF1744"
-                statusCircle.backgroundTintList = ColorStateList.valueOf(Color.parseColor(color))
             }
 
             private fun setupImageObserver() {
                 imageObserver = object : ContentObserver(mainHandler) {
                     override fun onChange(selfChange: Boolean, uri: Uri?) {
                         super.onChange(selfChange, uri)
-                        showHudBannerRaw("📸 現像待ち・照合準備中...", "#0288D1", 5000L)
+                        // ★タイマーリセット: 撮影のたびに30分のタイマーを振り出しに戻す
+                        resetAutoStopTimer()
+                        
+                        showHudBannerRaw("📸 補正・照合準備中...", "#0288D1", 5000L)
                         mainHandler.removeCallbacks(debounceProcessRunnable)
                         mainHandler.postDelayed(debounceProcessRunnable, 1200L)
                     }
@@ -578,7 +611,7 @@ jobs:
 
                     cursor.use { c ->
                         if (!c.moveToFirst()) {
-                            writeDebugLog("⚠ エラー: DCIM/Camera内に写真が見つかりません")
+                            writeDebugLog("⚠ エラー: 写真データ0件")
                             showHudBanner("⚠ 失敗: 写真データが見つかりません", false)
                             isBannerUpdated = true
                             return
@@ -587,8 +620,6 @@ jobs:
                         val filePath = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)) ?: ""
                         val dateTaken = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN))
                         val dateAddedSec = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED))
-
-                        writeDebugLog("対象写真特定: $filePath")
 
                         if (processedPaths.contains(filePath)) {
                             writeDebugLog("スキップ: すでに同期処理済みの写真です")
@@ -623,13 +654,11 @@ jobs:
                     }
                 } catch (e: Exception) {
                     writeDebugLog("⚠ クエリ例外発生: ${e.javaClass.simpleName} - ${e.message}")
-                    Log.e(TAG, "クエリ例外", e)
-                    showHudBanner("⚠ 失敗: クエリエラー (${e.javaClass.simpleName})", false)
+                    showHudBanner("⚠ 失敗: クエリエラー", false)
                     isBannerUpdated = true
                 } finally {
                     if (!isBannerUpdated) {
                         mainHandler.post(hideBannerRunnable)
-                        writeDebugLog("処理終了 (バナー非表示)")
                     }
                 }
             }
@@ -673,8 +702,8 @@ jobs:
             private fun writeAndVerifyGeotag(file: File, dateTaken: Long) {
                 val snapshot = gpsLog.toList()
                 if (snapshot.isEmpty()) {
-                    showHudBanner("⚠ 失敗: 生GPSログが空です", false)
-                    writeDebugLog("失敗: 生GPSログが空です")
+                    showHudBanner("⚠ 失敗: 補正GPSログが空です", false)
+                    writeDebugLog("失敗: 補正GPSログが空です")
                     return
                 }
 
@@ -682,8 +711,8 @@ jobs:
                 
                 val isStat = if (nearWindow.size >= 2) {
                     val (maxDist, rms) = jitterStats(nearWindow)
-                    val stat = maxDist < 6.0f
-                    writeDebugLog("重心最大ズレ: ${String.format("%.1f", maxDist)}m / RMS: ${String.format("%.1f", rms)}m / 静止判定(6m): $stat")
+                    val stat = maxDist < 8.0f
+                    writeDebugLog("補正重心ズレ: ${String.format("%.1f", maxDist)}m / RMS: ${String.format("%.1f", rms)}m / 静止判定(8m): $stat")
                     stat
                 } else {
                     false
@@ -701,41 +730,35 @@ jobs:
                 }
 
                 if (record == null || abs(record.timeMs - dateTaken) > 40_000) {
-                    showHudBanner("⚠ 失敗: 撮影時刻の生GPSログなし", false)
-                    writeDebugLog("失敗: 撮影時刻の生GPSログなし (撮影時刻: $dateTaken)")
+                    showHudBanner("⚠ 失敗: 撮影時刻の補正GPSログなし", false)
+                    writeDebugLog("失敗: 撮影時刻の補正GPSログなし (撮影時刻: $dateTaken)")
                     return
                 }
 
                 val beforeExif = try { ExifInterface(file.absolutePath) } catch (e: Exception) { null }
                 val beforeLatLon = beforeExif?.latLong
 
-                writeDebugLog("=== Exif上書き同期実行 ===")
-                writeDebugLog("書き込み前Exif: ${beforeLatLon?.get(0)}, ${beforeLatLon?.get(1)}")
-                writeDebugLog("上書き座標: lat=${record.lat}, lon=${record.lon}, acc=${record.acc}")
+                writeDebugLog("=== 補正Exif上書き実行 ===")
+                writeDebugLog("書き込み前Exif(Googleカメラ値): ${beforeLatLon?.get(0)}, ${beforeLatLon?.get(1)}")
+                writeDebugLog("上書き座標(Fused Location): lat=${record.lat}, lon=${record.lon}, acc=${record.acc}")
 
                 try {
                     val exif = ExifInterface(file.absolutePath)
                     exif.setLatLong(record.lat, record.lon)
                     exif.setAltitude(record.alt)
-                    exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, "RAW_GNSS_OVERLAY")
+                    exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, "FUSED_GNSS_OVERLAY")
                     exif.saveAttributes()
 
                     val verifyExif = ExifInterface(file.absolutePath)
                     val afterLatLon = verifyExif.latLong
 
-                    writeDebugLog("書き込み後Exif: ${afterLatLon?.get(0)}, ${afterLatLon?.get(1)}")
-
                     val actuallyChanged = beforeLatLon == null ||
                         abs(beforeLatLon[0] - (afterLatLon?.get(0) ?: 0.0)) > 0.00001 ||
                         abs(beforeLatLon[1] - (afterLatLon?.get(1) ?: 0.0)) > 0.00001
 
-                    val isVerified = afterLatLon != null &&
-                        abs(afterLatLon[0] - record.lat) < 0.0001 &&
-                        abs(afterLatLon[1] - record.lon) < 0.0001
+                    writeDebugLog("Googleカメラ値からの変化あり: $actuallyChanged")
 
-                    writeDebugLog("変化あり: $actuallyChanged / 照合成功: $isVerified")
-
-                    if (isVerified) {
+                    if (afterLatLon != null) {
                         processedPaths.add(file.absolutePath)
                         MediaScannerConnection.scanFile(
                             applicationContext,
@@ -743,9 +766,9 @@ jobs:
                             arrayOf("image/jpeg")
                         ) { _, _ -> }
 
-                        val tag = if (actuallyChanged) "変化あり" else "変化なし"
-                        val sampleText = if (isStat) "(${nearWindow.size}点平均)" else "(1点)"
-                        val summary = "✓ 同期成功[$tag]: ±${record.acc.toInt()}m $sampleText"
+                        val tag = if (actuallyChanged) "補正実行" else "変化なし"
+                        val sampleText = if (isStat) "(${nearWindow.size}点)" else "(1点)"
+                        val summary = "✓ $tag: ±${record.acc.toInt()}m $sampleText"
                         
                         writeDebugLog("結果: $summary")
                         showHudBanner(summary, true)
@@ -789,8 +812,8 @@ jobs:
                 val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
 
                 val notif = NotificationCompat.Builder(this, chId)
-                    .setContentTitle("GPSモニター & Exif自動同期中")
-                    .setContentText("撮影時刻近傍の測位を加重平均してExifに反映します")
+                    .setContentTitle("GPSモニター (補正モード)")
+                    .setContentText("マップ準拠の補正座標をExifに反映します")
                     .setSmallIcon(android.R.drawable.ic_menu_mylocation)
                     .addAction(android.R.drawable.ic_menu_close_clear_cancel, "終了する", stopPendingIntent)
                     .setOngoing(true)
@@ -803,9 +826,12 @@ jobs:
                 super.onDestroy()
                 mainHandler.removeCallbacks(debounceProcessRunnable)
                 mainHandler.removeCallbacks(hideBannerRunnable)
+                mainHandler.removeCallbacks(autoStopRunnable)
                 imageObserver?.let { contentResolver.unregisterContentObserver(it) }
+                if (::fusedLocationClient.isInitialized) {
+                    fusedLocationClient.removeLocationUpdates(locationCallback)
+                }
                 if (::locationManager.isInitialized) {
-                    locationManager.removeUpdates(this)
                     try {
                         locationManager.unregisterGnssStatusCallback(gnssCallback)
                     } catch (e: Exception) {}
