@@ -61,8 +61,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 6
-                versionName = "2.1"
+                versionCode = 7
+                versionName = "2.2"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -89,6 +89,15 @@ jobs:
         <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
             <solid android:color="#FF0000" />
             <size android:width="28dp" android:height="28dp" />
+        </shape>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/drawable/banner_bg.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+            <corners android:radius="12dp" />
+            <padding android:left="16dp" android:top="8dp" android:right="16dp" android:bottom="8dp" />
+            <solid android:color="#D91B1B1B" />
         </shape>
         EOF
 
@@ -130,6 +139,24 @@ jobs:
                 android:shadowDy="1"
                 android:shadowRadius="3" />
         </LinearLayout>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/layout/banner_view.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <TextView xmlns:android="http://schemas.android.com/apk/res/android"
+            android:id="@+id/hud_banner_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/banner_bg"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:elevation="10dp"
+            android:gravity="center"
+            android:shadowColor="#000000"
+            android:shadowDx="1"
+            android:shadowDy="1"
+            android:shadowRadius="2" />
         EOF
 
         cat << 'EOF' > app/src/main/AndroidManifest.xml
@@ -259,7 +286,6 @@ jobs:
         import android.util.Log
         import android.view.*
         import android.widget.TextView
-        import android.widget.Toast
         import androidx.core.app.NotificationCompat
         import androidx.exifinterface.media.ExifInterface
         import java.io.File
@@ -279,6 +305,7 @@ jobs:
             private lateinit var statusCircle: View
             private lateinit var accuracyText: TextView
             private lateinit var satelliteText: TextView
+            private lateinit var bannerView: TextView
             private lateinit var locationManager: LocationManager
             private val accuracyThreshold = 5.0f
 
@@ -288,6 +315,8 @@ jobs:
             private var imageObserver: ContentObserver? = null
             private var satellitesUsed = 0
             private var satellitesTotal = 0
+            private val mainHandler = Handler(Looper.getMainLooper())
+            private val hideBannerRunnable = Runnable { bannerView.visibility = View.GONE }
 
             private val gnssCallback = object : GnssStatus.Callback() {
                 override fun onSatelliteStatusChanged(status: GnssStatus) {
@@ -297,7 +326,7 @@ jobs:
                     }
                     satellitesUsed = used
                     satellitesTotal = status.satelliteCount
-                    Handler(Looper.getMainLooper()).post {
+                    mainHandler.post {
                         if (::satelliteText.isInitialized) {
                             satelliteText.text = "衛星: $satellitesUsed/$satellitesTotal"
                         }
@@ -319,6 +348,7 @@ jobs:
                 super.onCreate()
                 startNotification()
                 initOverlay()
+                initBanner()
                 startLocationUpdates()
                 setupImageObserver()
             }
@@ -367,6 +397,38 @@ jobs:
                 windowManager.addView(overlayView, params)
             }
 
+            private fun initBanner() {
+                bannerView = LayoutInflater.from(this).inflate(R.layout.banner_view, null) as TextView
+                bannerView.visibility = View.GONE
+
+                val bannerParams = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    y = 100 // ステータスバー直下
+                }
+                windowManager.addView(bannerView, bannerParams)
+            }
+
+            private fun showHudBanner(message: String, isSuccess: Boolean) {
+                mainHandler.post {
+                    if (!::bannerView.isInitialized) return@post
+                    mainHandler.removeCallbacks(hideBannerRunnable)
+
+                    bannerView.text = message
+                    val bgColor = if (isSuccess) "#E61B5E20" else "#E6B71C1C" // 濃緑 or 濃赤
+                    bannerView.backgroundTintList = ColorStateList.valueOf(Color.parseColor(bgColor))
+                    bannerView.visibility = View.VISIBLE
+
+                    // 3秒後に自動非表示
+                    mainHandler.postDelayed(hideBannerRunnable, 3000L)
+                }
+            }
+
             private fun startLocationUpdates() {
                 locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
                 try {
@@ -377,7 +439,7 @@ jobs:
                         this,
                         Looper.getMainLooper()
                     )
-                    locationManager.registerGnssStatusCallback(gnssCallback, Handler(Looper.getMainLooper()))
+                    locationManager.registerGnssStatusCallback(gnssCallback, mainHandler)
                 } catch (e: SecurityException) {
                     Log.e(TAG, "位置情報の権限不足", e)
                 }
@@ -400,7 +462,7 @@ jobs:
             }
 
             private fun setupImageObserver() {
-                imageObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                imageObserver = object : ContentObserver(mainHandler) {
                     override fun onChange(selfChange: Boolean, uri: Uri?) {
                         super.onChange(selfChange, uri)
                         executor.execute { processLatestImage() }
@@ -419,7 +481,6 @@ jobs:
                     MediaStore.Images.Media.DATA,
                     MediaStore.Images.Media.DATE_TAKEN
                 )
-                // 誤爆防止条件を緩和し、純粋に直近撮影の1枚を対象にする
                 val sortOrder = "${MediaStore.Images.Media.DATE_TAKEN} DESC LIMIT 1"
 
                 try {
@@ -435,20 +496,23 @@ jobs:
                         val filePath = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)) ?: return
                         val dateTaken = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN))
 
-                        // カメラフォルダ以外は除外
                         if (!filePath.contains("DCIM/Camera")) return
-
-                        // すでに正常上書き済みのファイルならスキップ
                         if (processedPaths.contains(filePath)) return
 
                         val file = File(filePath)
-                        if (!waitForFileStable(file)) return
-                        if (!file.canWrite()) return
+                        if (!waitForFileStable(file)) {
+                            showHudBanner("⚠ 失敗: 画像の現像待ちタイムアウト", false)
+                            return
+                        }
+                        if (!file.canWrite()) {
+                            showHudBanner("⚠ 失敗: ファイル書き込み権限なし", false)
+                            return
+                        }
 
-                        writeGeotag(file, dateTaken)
+                        writeAndVerifyGeotag(file, dateTaken)
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "画像クエリ中にエラー", e)
+                    Log.e(TAG, "画像検知エラー", e)
                 }
             }
 
@@ -458,7 +522,7 @@ jobs:
                 val start = System.currentTimeMillis()
                 while (System.currentTimeMillis() - start < maxWaitMs) {
                     val size = if (file.exists()) file.length() else -1L
-                    if (size > 50_000L && size == lastSize) { // 50KB以上かつサイズ静止
+                    if (size > 50_000L && size == lastSize) {
                         stableCount++
                         if (stableCount >= 2) return true
                     } else {
@@ -470,47 +534,57 @@ jobs:
                 return false
             }
 
-            private fun writeGeotag(file: File, dateTaken: Long) {
+            private fun writeAndVerifyGeotag(file: File, dateTaken: Long) {
                 val snapshot = gpsLog.toList()
-                if (snapshot.isEmpty()) return
+                if (snapshot.isEmpty()) {
+                    showHudBanner("⚠ 失敗: 生GPSログが空です", false)
+                    return
+                }
 
-                // 窓を10秒に拡大。見つからなければ直近全ログから最近傍を採用
                 val nearWindow = snapshot.filter { abs(it.timeMs - dateTaken) < 10_000 }
                 val record = if (nearWindow.isNotEmpty() && isStationary(nearWindow)) {
                     weightedAverage(nearWindow)
                 } else {
                     snapshot.minByOrNull { abs(it.timeMs - dateTaken) }
-                } ?: return
+                }
 
-                // 撮影時刻とログが30秒以上離れていたらスキップ
-                if (abs(record.timeMs - dateTaken) > 30_000) return
+                if (record == null || abs(record.timeMs - dateTaken) > 30_000) {
+                    showHudBanner("⚠ 失敗: 撮影時刻の生GPSログなし", false)
+                    return
+                }
 
                 try {
+                    // 1. Exif書き込み
                     val exif = ExifInterface(file.absolutePath)
                     exif.setLatLong(record.lat, record.lon)
                     exif.setAltitude(record.alt)
                     exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, "RAW_GNSS_OVERLAY")
                     exif.saveAttributes()
 
-                    // 正常書き込み完了後にフラグセット
-                    processedPaths.add(file.absolutePath)
+                    // 2. Read-after-Write による厳格な検証
+                    val verifyExif = ExifInterface(file.absolutePath)
+                    val coords = verifyExif.latLong
+                    val isVerified = coords != null &&
+                        abs(coords[0] - record.lat) < 0.0001 &&
+                        abs(coords[1] - record.lon) < 0.0001
 
-                    // ★最重要：MediaStoreのキャッシュを強制更新させる
-                    MediaScannerConnection.scanFile(
-                        applicationContext,
-                        arrayOf(file.absolutePath),
-                        arrayOf("image/jpeg")
-                    ) { _, _ -> }
+                    if (isVerified) {
+                        processedPaths.add(file.absolutePath)
 
-                    Handler(Looper.getMainLooper()).post {
-                        Toast.makeText(
+                        // 3. MediaStoreキャッシュを同期更新
+                        MediaScannerConnection.scanFile(
                             applicationContext,
-                            "Exif同期完了: ±${record.acc.toInt()}m (衛星 $satellitesUsed/$satellitesTotal)",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                            arrayOf(file.absolutePath),
+                            arrayOf("image/jpeg")
+                        ) { _, _ -> }
+
+                        showHudBanner("✓ Exif同期完了: ±${record.acc.toInt()}m (衛星 $satellitesUsed/$satellitesTotal)", true)
+                    } else {
+                        showHudBanner("⚠ 失敗: 書き込み後の照合に不一致", false)
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Exif書き込みに失敗: ${file.absolutePath}", e)
+                    Log.e(TAG, "Exif書き込み例外", e)
+                    showHudBanner("⚠ 失敗: 書き込みエラー (${e.javaClass.simpleName})", false)
                 }
             }
 
@@ -565,6 +639,7 @@ jobs:
 
             override fun onDestroy() {
                 super.onDestroy()
+                mainHandler.removeCallbacks(hideBannerRunnable)
                 imageObserver?.let { contentResolver.unregisterContentObserver(it) }
                 if (::locationManager.isInitialized) {
                     locationManager.removeUpdates(this)
@@ -573,6 +648,7 @@ jobs:
                     } catch (e: Exception) {}
                 }
                 if (::overlayView.isInitialized) windowManager.removeView(overlayView)
+                if (::bannerView.isInitialized) windowManager.removeView(bannerView)
                 executor.shutdown()
             }
         }
