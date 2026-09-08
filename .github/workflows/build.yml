@@ -61,8 +61,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 9
-                versionName = "2.4"
+                versionCode = 10
+                versionName = "2.5"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -296,6 +296,7 @@ jobs:
         import androidx.core.app.NotificationCompat
         import androidx.exifinterface.media.ExifInterface
         import java.io.File
+        import java.text.SimpleDateFormat
         import java.util.*
         import java.util.concurrent.ConcurrentLinkedQueue
         import java.util.concurrent.Executors
@@ -567,10 +568,45 @@ jobs:
                 return false
             }
 
+            // カメラ画像フォルダへログを追記するヘルパー
+            private fun appendToFileLog(targetDir: File?, lines: List<String>) {
+                try {
+                    val dir = targetDir ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
+                    if (!dir.exists()) dir.mkdirs()
+                    val logFile = File(dir, "gps_sync.log")
+                    val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+                    
+                    val sb = StringBuilder()
+                    for (line in lines) {
+                        sb.append("[$timeStr] ").append(line).append("\n")
+                    }
+                    logFile.appendText(sb.toString())
+
+                    // PC接続時（MTP）やFilesアプリで即座に見えるようメディアスキャン
+                    MediaScannerConnection.scanFile(
+                        applicationContext,
+                        arrayOf(logFile.absolutePath),
+                        arrayOf("text/plain")
+                    ) { _, _ -> }
+                } catch (e: Exception) {
+                    Log.e(TAG, "ログファイル書き込み失敗", e)
+                }
+            }
+
             private fun writeAndVerifyGeotag(file: File, dateTaken: Long) {
+                val logLines = mutableListOf<String>()
+                val targetDir = file.parentFile
+
+                fun trace(msg: String) {
+                    Log.i(TAG, msg)
+                    logLines.add(msg)
+                }
+
                 val snapshot = gpsLog.toList()
                 if (snapshot.isEmpty()) {
                     showHudBanner("⚠ 失敗: 生GPSログが空です", false)
+                    trace("失敗: 生GPSログが空です")
+                    appendToFileLog(targetDir, logLines)
                     return
                 }
 
@@ -584,18 +620,20 @@ jobs:
 
                 if (record == null || abs(record.timeMs - dateTaken) > 30_000) {
                     showHudBanner("⚠ 失敗: 撮影時刻の生GPSログなし", false)
+                    trace("失敗: 撮影時刻の生GPSログなし (dateTaken=$dateTaken)")
+                    appendToFileLog(targetDir, logLines)
                     return
                 }
 
                 val beforeExif = try { ExifInterface(file.absolutePath) } catch (e: Exception) { null }
                 val beforeLatLon = beforeExif?.latLong
 
-                Log.i(TAG, "=== 同期試行 ===")
-                Log.i(TAG, "対象ファイル: ${file.absolutePath}")
-                Log.i(TAG, "撮影時刻: $dateTaken / 使用ログ数: ${nearWindow.size} / 静止判定: $usedStationary")
-                Log.i(TAG, "書き込み前Exif座標: ${beforeLatLon?.get(0)}, ${beforeLatLon?.get(1)}")
-                Log.i(TAG, "書き込む座標: lat=${record.lat}, lon=${record.lon}, acc=${record.acc}")
-                Log.i(TAG, "衛星: $satellitesUsed/$satellitesTotal")
+                trace("=== 同期試行 ===")
+                trace("対象ファイル: ${file.absolutePath}")
+                trace("撮影時刻: $dateTaken / 使用ログ数: ${nearWindow.size} / 静止判定: $usedStationary")
+                trace("書き込み前Exif座標: ${beforeLatLon?.get(0)}, ${beforeLatLon?.get(1)}")
+                trace("書き込む座標: lat=${record.lat}, lon=${record.lon}, acc=${record.acc}")
+                trace("衛星: $satellitesUsed/$satellitesTotal")
 
                 try {
                     val exif = ExifInterface(file.absolutePath)
@@ -607,7 +645,7 @@ jobs:
                     val verifyExif = ExifInterface(file.absolutePath)
                     val afterLatLon = verifyExif.latLong
 
-                    Log.i(TAG, "書き込み後Exif座標: ${afterLatLon?.get(0)}, ${afterLatLon?.get(1)}")
+                    trace("書き込み後Exif座標: ${afterLatLon?.get(0)}, ${afterLatLon?.get(1)}")
 
                     val actuallyChanged = beforeLatLon == null ||
                         abs(beforeLatLon[0] - (afterLatLon?.get(0) ?: 0.0)) > 0.00001 ||
@@ -617,7 +655,7 @@ jobs:
                         abs(afterLatLon[0] - record.lat) < 0.0001 &&
                         abs(afterLatLon[1] - record.lon) < 0.0001
 
-                    Log.i(TAG, "値の変化: $actuallyChanged / 意図した値と一致: $isVerified")
+                    trace("値の変化: $actuallyChanged / 意図した値と一致: $isVerified")
 
                     if (isVerified) {
                         processedPaths.add(file.absolutePath)
@@ -629,13 +667,19 @@ jobs:
 
                         val tag = if (actuallyChanged) "変化あり" else "変化なし(元々同じ値)"
                         val sampleCountText = if (usedStationary) "(${nearWindow.size}点平均)" else "(1点)"
-                        showHudBanner("✓ 完了[$tag]: ±${record.acc.toInt()}m $sampleCountText", true)
+                        val summary = "✓ 完了[$tag]: ±${record.acc.toInt()}m $sampleCountText"
+                        trace("結果: 成功 ($summary)")
+                        showHudBanner(summary, true)
                     } else {
+                        trace("結果: 失敗 (書き込み後の照合に不一致)")
                         showHudBanner("⚠ 失敗: 書き込み後の照合に不一致", false)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Exif書き込み例外", e)
+                    trace("結果: 例外発生 (${e.javaClass.simpleName}: ${e.message})")
                     showHudBanner("⚠ 失敗: ${e.javaClass.simpleName}", false)
+                } finally {
+                    appendToFileLog(targetDir, logLines)
                 }
             }
 
