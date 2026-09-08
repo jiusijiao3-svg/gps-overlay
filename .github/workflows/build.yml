@@ -66,8 +66,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 15
-                versionName = "3.0"
+                versionCode = 18
+                versionName = "3.3"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -281,6 +281,7 @@ jobs:
         cat << 'EOF' > app/src/main/java/com/example/gpsoverlay/OverlayService.kt
         package com.example.gpsoverlay
         import android.app.*
+        import android.content.ContentResolver
         import android.content.Context
         import android.content.Intent
         import android.content.res.ColorStateList
@@ -331,14 +332,12 @@ jobs:
             private var satellitesTotal = 0
             private val mainHandler = Handler(Looper.getMainLooper())
             
-            // バナー自動消去用
             private val hideBannerRunnable = Runnable {
                 try {
                     if (::hudBannerText.isInitialized) hudBannerText.visibility = View.GONE
                 } catch (e: Exception) {}
             }
 
-            // デバウンス用（カメラの連続通知が完全に止まってから1.2秒後に1回だけ実行）
             private val debounceProcessRunnable = Runnable {
                 executor.execute { processImageEvent() }
             }
@@ -374,8 +373,7 @@ jobs:
                 startNotification()
                 initOverlay()
                 initBanner()
-                // 起動時に直ちにログファイルを作成（書き込みテスト）
-                writeDebugLog("=== GPS Overlay サービス起動 (v3.0) ===")
+                writeDebugLog("=== GPS Overlay サービス起動 (v3.3) ===")
                 startLocationUpdates()
                 setupImageObserver()
             }
@@ -389,7 +387,6 @@ jobs:
                     val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
                     logFile.appendText("[$timeStr] $message\n")
                     
-                    // PCやFilesアプリで見えるようスキャン
                     MediaScannerConnection.scanFile(
                         applicationContext,
                         arrayOf(logFile.absolutePath),
@@ -476,7 +473,6 @@ jobs:
                         hudBannerText.backgroundTintList = ColorStateList.valueOf(Color.parseColor(hexColor))
                         hudBannerText.visibility = View.VISIBLE
 
-                        // 青バナーも含め、必ず指定時間（最低5秒）で消えるようにして残留を根絶
                         val hideDelay = if (autoHideMs > 0L) autoHideMs else 5000L
                         mainHandler.postDelayed(hideBannerRunnable, hideDelay)
                     } catch (e: Exception) {}
@@ -519,12 +515,7 @@ jobs:
                 imageObserver = object : ContentObserver(mainHandler) {
                     override fun onChange(selfChange: Boolean, uri: Uri?) {
                         super.onChange(selfChange, uri)
-                        
-                        // 撮影を検知したら青バナーを点灯（5秒安全タイマー付き）
                         showHudBannerRaw("📸 現像待ち・照合準備中...", "#0288D1", 5000L)
-
-                        // ★核心：デバウンス処理
-                        // 前のタイマーをキャンセルし、最後の通知から1200ms後に1回だけ本番処理を呼ぶ
                         mainHandler.removeCallbacks(debounceProcessRunnable)
                         mainHandler.postDelayed(debounceProcessRunnable, 1200L)
                     }
@@ -538,6 +529,7 @@ jobs:
 
             private fun processImageEvent() {
                 writeDebugLog("--- 本番同期処理開始 (現像完了検知) ---")
+                var isBannerUpdated = false
 
                 val projection = arrayOf(
                     MediaStore.Images.Media._ID,
@@ -546,23 +538,30 @@ jobs:
                     MediaStore.Images.Media.DATE_ADDED
                 )
 
-                // 最も安定している標準クエリ方式（Android 14対応）
-                val selection = "${MediaStore.Images.Media.DATA} LIKE ?"
-                val selectionArgs = arrayOf("%DCIM/Camera%")
-                val sortOrder = "${MediaStore.Images.Media._ID} DESC"
-
                 try {
-                    val cursor = contentResolver.query(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        projection,
-                        selection,
-                        selectionArgs,
-                        sortOrder
-                    )
+                    val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        val queryArgs = Bundle().apply {
+                            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.Images.Media.DATA} LIKE ?")
+                            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf("%DCIM/Camera%"))
+                            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Images.Media._ID))
+                            putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                            putInt(ContentResolver.QUERY_ARG_LIMIT, 1)
+                        }
+                        contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, queryArgs, null)
+                    } else {
+                        contentResolver.query(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                            projection,
+                            "${MediaStore.Images.Media.DATA} LIKE ?",
+                            arrayOf("%DCIM/Camera%"),
+                            "${MediaStore.Images.Media._ID} DESC LIMIT 1"
+                        )
+                    }
 
                     if (cursor == null) {
                         writeDebugLog("⚠ エラー: Cursorがnull")
                         showHudBanner("⚠ 失敗: データベース応答なし", false)
+                        isBannerUpdated = true
                         return
                     }
 
@@ -570,6 +569,7 @@ jobs:
                         if (!c.moveToFirst()) {
                             writeDebugLog("⚠ エラー: DCIM/Camera内に写真が見つかりません")
                             showHudBanner("⚠ 失敗: 写真データが見つかりません", false)
+                            isBannerUpdated = true
                             return
                         }
 
@@ -581,6 +581,7 @@ jobs:
 
                         if (processedPaths.contains(filePath)) {
                             writeDebugLog("スキップ: すでに同期処理済みの写真です")
+                            isBannerUpdated = true
                             mainHandler.post(hideBannerRunnable)
                             return
                         }
@@ -589,24 +590,74 @@ jobs:
                         if (!file.exists()) {
                             writeDebugLog("⚠ エラー: ファイルが存在しません")
                             showHudBanner("⚠ 失敗: ファイル未検出", false)
+                            isBannerUpdated = true
                             return
+                        }
+
+                        writeDebugLog("ファイル安定化待機開始...")
+                        if (!waitForFileStable(file, 5000L, 200L)) {
+                            writeDebugLog("⚠ 警告: ファイルサイズが安定しないまま処理を続行します")
                         }
 
                         if (!file.canWrite()) {
                             writeDebugLog("⚠ エラー: ファイルの書き込み権限がありません")
                             showHudBanner("⚠ 失敗: 書き込み権限不足", false)
+                            isBannerUpdated = true
                             return
                         }
 
-                        // デバウンスによりすでにファイルは完成しているため、タイムスタンプを決定して即座に書き込みへ
                         val effectiveTimestamp = if (dateTaken > 0L) dateTaken else dateAddedSec * 1000L
                         writeAndVerifyGeotag(file, effectiveTimestamp)
+                        isBannerUpdated = true
                     }
                 } catch (e: Exception) {
                     writeDebugLog("⚠ クエリ例外発生: ${e.javaClass.simpleName} - ${e.message}")
                     Log.e(TAG, "クエリ例外", e)
                     showHudBanner("⚠ 失敗: クエリエラー (${e.javaClass.simpleName})", false)
+                    isBannerUpdated = true
+                } finally {
+                    if (!isBannerUpdated) {
+                        mainHandler.post(hideBannerRunnable)
+                        writeDebugLog("処理終了 (バナー非表示)")
+                    }
                 }
+            }
+
+            private fun waitForFileStable(file: File, maxWaitMs: Long = 5000L, pollMs: Long = 200L): Boolean {
+                var lastSize = -1L
+                var stableCount = 0
+                val start = System.currentTimeMillis()
+                while (System.currentTimeMillis() - start < maxWaitMs) {
+                    val size = if (file.exists()) file.length() else -1L
+                    if (size > 0L && size == lastSize) {
+                        stableCount++
+                        if (stableCount >= 2) return true
+                    } else {
+                        stableCount = 0
+                    }
+                    lastSize = size
+                    try { Thread.sleep(pollMs) } catch (e: InterruptedException) { return false }
+                }
+                return false
+            }
+
+            // ★改良：重心ベースのジッター統計を算出
+            private fun jitterStats(samples: List<GpsRecord>): Pair<Float, Float> {
+                var latSum = 0.0; var lonSum = 0.0
+                for (s in samples) { latSum += s.lat; lonSum += s.lon }
+                val centerLat = latSum / samples.size
+                val centerLon = lonSum / samples.size
+
+                var maxDist = 0f
+                var sqSum = 0.0
+                val results = FloatArray(1)
+                for (s in samples) {
+                    Location.distanceBetween(centerLat, centerLon, s.lat, s.lon, results)
+                    maxDist = maxOf(maxDist, results[0])
+                    sqSum += (results[0] * results[0]).toDouble()
+                }
+                val rms = sqrt(sqSum / samples.size).toFloat()
+                return Pair(maxDist, rms)
             }
 
             private fun writeAndVerifyGeotag(file: File, dateTaken: Long) {
@@ -617,10 +668,25 @@ jobs:
                     return
                 }
 
-                // 窓を15秒に拡大（HDR現像遅延を完全吸収）
-                val nearWindow = snapshot.filter { abs(it.timeMs - dateTaken) < 15_000 }
-                val usedStationary = nearWindow.isNotEmpty() && isStationary(nearWindow)
-                val record = if (usedStationary) {
+                // 窓を±4秒（計8秒間）に適正化
+                val nearWindow = snapshot.filter { abs(it.timeMs - dateTaken) < 4_000 }
+                
+                // 重心ベースで静止判定（窓内の全点が重心から半径6m以内に収まっているか）
+                val isStat = if (nearWindow.size >= 2) {
+                    val (maxDist, rms) = jitterStats(nearWindow)
+                    val stat = maxDist < 6.0f
+                    writeDebugLog("重心最大ズレ: ${String.format("%.1f", maxDist)}m / RMS: ${String.format("%.1f", rms)}m / 静止判定(6m): $stat")
+                    stat
+                } else {
+                    false
+                }
+
+                if (nearWindow.isNotEmpty()) {
+                    val accListStr = nearWindow.joinToString(", ") { "acc=${it.acc.toInt()}m" }
+                    writeDebugLog("窓内サンプル(${nearWindow.size}点): [$accListStr]")
+                }
+
+                val record = if (isStat) {
                     weightedAverage(nearWindow)
                 } else {
                     snapshot.minByOrNull { abs(it.timeMs - dateTaken) }
@@ -636,10 +702,8 @@ jobs:
                 val beforeLatLon = beforeExif?.latLong
 
                 writeDebugLog("=== Exif上書き同期実行 ===")
-                writeDebugLog("撮影時刻: $dateTaken / サンプル数: ${nearWindow.size} / 静止判定: $usedStationary")
                 writeDebugLog("書き込み前Exif: ${beforeLatLon?.get(0)}, ${beforeLatLon?.get(1)}")
                 writeDebugLog("上書き座標: lat=${record.lat}, lon=${record.lon}, acc=${record.acc}")
-                writeDebugLog("衛星状態: $satellitesUsed/$satellitesTotal")
 
                 try {
                     val exif = ExifInterface(file.absolutePath)
@@ -648,7 +712,6 @@ jobs:
                     exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, "RAW_GNSS_OVERLAY")
                     exif.saveAttributes()
 
-                    // Read-after-Write による厳格な照合
                     val verifyExif = ExifInterface(file.absolutePath)
                     val afterLatLon = verifyExif.latLong
 
@@ -666,8 +729,6 @@ jobs:
 
                     if (isVerified) {
                         processedPaths.add(file.absolutePath)
-
-                        // MediaStoreキャッシュ強制更新
                         MediaScannerConnection.scanFile(
                             applicationContext,
                             arrayOf(file.absolutePath),
@@ -675,7 +736,7 @@ jobs:
                         ) { _, _ -> }
 
                         val tag = if (actuallyChanged) "変化あり" else "変化なし"
-                        val sampleText = if (usedStationary) "(${nearWindow.size}点平均)" else "(1点)"
+                        val sampleText = if (isStat) "(${nearWindow.size}点平均)" else "(1点)"
                         val summary = "✓ 同期成功[$tag]: ±${record.acc.toInt()}m $sampleText"
                         
                         writeDebugLog("結果: $summary")
@@ -709,15 +770,6 @@ jobs:
                     alt = altSum / wSum,
                     acc = avgAcc.toFloat()
                 )
-            }
-
-            private fun isStationary(samples: List<GpsRecord>, thresholdMeters: Float = 3.0f): Boolean {
-                if (samples.size < 2) return false
-                val first = samples.first()
-                val last = samples.last()
-                val results = FloatArray(1)
-                Location.distanceBetween(first.lat, first.lon, last.lat, last.lon, results)
-                return results[0] < thresholdMeters
             }
 
             private fun startNotification() {
