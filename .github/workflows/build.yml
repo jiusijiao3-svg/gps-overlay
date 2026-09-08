@@ -61,8 +61,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 5
-                versionName = "2.0"
+                versionCode = 6
+                versionName = "2.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -173,13 +173,10 @@ jobs:
         import android.os.Environment
         import android.provider.MediaStore
         import android.provider.Settings
-        import android.util.Log
         import android.widget.Toast
         import androidx.activity.result.contract.ActivityResultContracts
         import androidx.appcompat.app.AppCompatActivity
         import androidx.core.content.ContextCompat
-
-        private const val TAG = "GpsOverlay/Main"
 
         class MainActivity : AppCompatActivity() {
             private val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION).apply {
@@ -193,7 +190,6 @@ jobs:
                 if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
                     checkAndProceed()
                 } else {
-                    Log.w(TAG, "位置情報権限が拒否された")
                     Toast.makeText(this, "高精度位置情報の許可が必要です", Toast.LENGTH_SHORT).show()
                     finish()
                 }
@@ -234,7 +230,6 @@ jobs:
                 try {
                     startActivity(cameraIntent)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Googleカメラが見つからないため標準カメラを起動", e)
                     startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     })
@@ -257,6 +252,7 @@ jobs:
         import android.location.Location
         import android.location.LocationListener
         import android.location.LocationManager
+        import android.media.MediaScannerConnection
         import android.net.Uri
         import android.os.*
         import android.provider.MediaStore
@@ -287,10 +283,9 @@ jobs:
             private val accuracyThreshold = 5.0f
 
             private val gpsLog = ConcurrentLinkedQueue<GpsRecord>()
-            private val processedIds = Collections.synchronizedSet(HashSet<Long>())
+            private val processedPaths = Collections.synchronizedSet(HashSet<String>())
             private val executor = Executors.newSingleThreadExecutor()
             private var imageObserver: ContentObserver? = null
-            private var serviceStartTimeMs: Long = 0L
             private var satellitesUsed = 0
             private var satellitesTotal = 0
 
@@ -322,7 +317,6 @@ jobs:
 
             override fun onCreate() {
                 super.onCreate()
-                serviceStartTimeMs = System.currentTimeMillis()
                 startNotification()
                 initOverlay()
                 startLocationUpdates()
@@ -385,7 +379,7 @@ jobs:
                     )
                     locationManager.registerGnssStatusCallback(gnssCallback, Handler(Looper.getMainLooper()))
                 } catch (e: SecurityException) {
-                    Log.e(TAG, "位置情報の権限が不足しており測位を開始できない", e)
+                    Log.e(TAG, "位置情報の権限不足", e)
                 }
             }
 
@@ -423,40 +417,33 @@ jobs:
                 val projection = arrayOf(
                     MediaStore.Images.Media._ID,
                     MediaStore.Images.Media.DATA,
-                    MediaStore.Images.Media.DATE_TAKEN,
-                    MediaStore.Images.Media.DATE_ADDED,
-                    MediaStore.Images.Media.RELATIVE_PATH
+                    MediaStore.Images.Media.DATE_TAKEN
                 )
-                val selection = "${MediaStore.Images.Media.DATE_ADDED} >= ? AND " +
-                    "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
-                val selectionArgs = arrayOf((serviceStartTimeMs / 1000).toString(), "%DCIM/Camera%")
+                // 誤爆防止条件を緩和し、純粋に直近撮影の1枚を対象にする
                 val sortOrder = "${MediaStore.Images.Media.DATE_TAKEN} DESC LIMIT 1"
 
                 try {
                     contentResolver.query(
                         MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                         projection,
-                        selection,
-                        selectionArgs,
+                        null,
+                        null,
                         sortOrder
                     )?.use { cursor ->
                         if (!cursor.moveToFirst()) return
 
-                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
-                        val filePath = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
+                        val filePath = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)) ?: return
                         val dateTaken = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN))
 
-                        if (!processedIds.add(id)) return
+                        // カメラフォルダ以外は除外
+                        if (!filePath.contains("DCIM/Camera")) return
+
+                        // すでに正常上書き済みのファイルならスキップ
+                        if (processedPaths.contains(filePath)) return
 
                         val file = File(filePath)
-                        if (!waitForFileStable(file)) {
-                            Log.w(TAG, "ファイル書き込みが安定しないため同期を断念: $filePath")
-                            return
-                        }
-                        if (!file.canWrite()) {
-                            Log.w(TAG, "ファイルへの書き込み権限がない: $filePath")
-                            return
-                        }
+                        if (!waitForFileStable(file)) return
+                        if (!file.canWrite()) return
 
                         writeGeotag(file, dateTaken)
                     }
@@ -465,53 +452,55 @@ jobs:
                 }
             }
 
-            private fun waitForFileStable(file: File, maxWaitMs: Long = 5000L, pollMs: Long = 200L): Boolean {
+            private fun waitForFileStable(file: File, maxWaitMs: Long = 6000L, pollMs: Long = 250L): Boolean {
                 var lastSize = -1L
                 var stableCount = 0
                 val start = System.currentTimeMillis()
                 while (System.currentTimeMillis() - start < maxWaitMs) {
                     val size = if (file.exists()) file.length() else -1L
-                    if (size > 0 && size == lastSize) {
+                    if (size > 50_000L && size == lastSize) { // 50KB以上かつサイズ静止
                         stableCount++
                         if (stableCount >= 2) return true
                     } else {
                         stableCount = 0
                     }
                     lastSize = size
-                    try {
-                        Thread.sleep(pollMs)
-                    } catch (e: InterruptedException) {
-                        return false
-                    }
+                    try { Thread.sleep(pollMs) } catch (e: InterruptedException) { return false }
                 }
                 return false
             }
 
             private fun writeGeotag(file: File, dateTaken: Long) {
                 val snapshot = gpsLog.toList()
-                val nearWindow = snapshot.filter { abs(it.timeMs - dateTaken) < 4000 }
-                if (nearWindow.isEmpty()) {
-                    Log.w(TAG, "撮影時刻に近いGPSログが存在しない: $dateTaken")
-                    return
-                }
+                if (snapshot.isEmpty()) return
 
-                val record = if (isStationary(nearWindow)) {
+                // 窓を10秒に拡大。見つからなければ直近全ログから最近傍を採用
+                val nearWindow = snapshot.filter { abs(it.timeMs - dateTaken) < 10_000 }
+                val record = if (nearWindow.isNotEmpty() && isStationary(nearWindow)) {
                     weightedAverage(nearWindow)
                 } else {
-                    nearWindow.minByOrNull { abs(it.timeMs - dateTaken) }
+                    snapshot.minByOrNull { abs(it.timeMs - dateTaken) }
                 } ?: return
 
-                if (abs(record.timeMs - dateTaken) >= 15_000) {
-                    Log.w(TAG, "GPSログと撮影時刻の乖離が大きすぎるため同期をスキップ")
-                    return
-                }
+                // 撮影時刻とログが30秒以上離れていたらスキップ
+                if (abs(record.timeMs - dateTaken) > 30_000) return
 
                 try {
                     val exif = ExifInterface(file.absolutePath)
                     exif.setLatLong(record.lat, record.lon)
                     exif.setAltitude(record.alt)
-                    exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, "WEIGHTED_AVG_GNSS_OVERLAY")
+                    exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, "RAW_GNSS_OVERLAY")
                     exif.saveAttributes()
+
+                    // 正常書き込み完了後にフラグセット
+                    processedPaths.add(file.absolutePath)
+
+                    // ★最重要：MediaStoreのキャッシュを強制更新させる
+                    MediaScannerConnection.scanFile(
+                        applicationContext,
+                        arrayOf(file.absolutePath),
+                        arrayOf("image/jpeg")
+                    ) { _, _ -> }
 
                     Handler(Looper.getMainLooper()).post {
                         Toast.makeText(
@@ -527,10 +516,7 @@ jobs:
 
             private fun weightedAverage(samples: List<GpsRecord>): GpsRecord? {
                 if (samples.isEmpty()) return null
-                var wSum = 0.0
-                var latSum = 0.0
-                var lonSum = 0.0
-                var altSum = 0.0
+                var wSum = 0.0; var latSum = 0.0; var lonSum = 0.0; var altSum = 0.0
                 for (s in samples) {
                     val safeAcc = s.acc.toDouble().coerceAtLeast(0.5)
                     val w = 1.0 / (safeAcc * safeAcc)
@@ -584,9 +570,7 @@ jobs:
                     locationManager.removeUpdates(this)
                     try {
                         locationManager.unregisterGnssStatusCallback(gnssCallback)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "GnssStatusCallbackの解除に失敗", e)
-                    }
+                    } catch (e: Exception) {}
                 }
                 if (::overlayView.isInitialized) windowManager.removeView(overlayView)
                 executor.shutdown()
