@@ -66,8 +66,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 12
-                versionName = "2.7"
+                versionCode = 13
+                versionName = "2.8"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -281,6 +281,7 @@ jobs:
         cat << 'EOF' > app/src/main/java/com/example/gpsoverlay/OverlayService.kt
         package com.example.gpsoverlay
         import android.app.*
+        import android.content.ContentResolver
         import android.content.Context
         import android.content.Intent
         import android.content.res.ColorStateList
@@ -369,6 +370,18 @@ jobs:
                 setupImageObserver()
             }
 
+            private fun writeDebugLog(message: String) {
+                try {
+                    val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
+                    if (!dir.exists()) dir.mkdirs()
+                    val logFile = File(dir, "gps_sync.log")
+                    val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+                    logFile.appendText("[$timeStr] $message\n")
+                } catch (e: Exception) {
+                    Log.e(TAG, "ログ書き込み失敗", e)
+                }
+            }
+
             private fun initOverlay() {
                 windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_view, null)
@@ -432,7 +445,7 @@ jobs:
 
             private fun showHudBanner(message: String, isSuccess: Boolean) {
                 val colorHex = if (isSuccess) "#2E7D32" else "#C62828"
-                showHudBannerRaw(message, colorHex, 3500L)
+                showHudBannerRaw(message, colorHex, 4000L)
             }
 
             private fun showHudBannerRaw(message: String, hexColor: String, autoHideMs: Long) {
@@ -487,7 +500,11 @@ jobs:
                     override fun onChange(selfChange: Boolean, uri: Uri?) {
                         super.onChange(selfChange, uri)
                         showHudBannerRaw("📸 撮影検知: 照合待機中...", "#0288D1", 0L)
-                        executor.execute { processImageEvent() }
+                        // トリガーされた瞬間にログを直書き
+                        executor.execute { 
+                            writeDebugLog("--- 📸 撮影イベント検知 (URI: $uri) ---")
+                            processImageEvent() 
+                        }
                     }
                 }
                 contentResolver.registerContentObserver(
@@ -498,60 +515,89 @@ jobs:
             }
 
             private fun processImageEvent() {
-                try { Thread.sleep(600L) } catch (e: InterruptedException) {}
-
-                val projection = arrayOf(
-                    MediaStore.Images.Media._ID,
-                    MediaStore.Images.Media.DATA,
-                    MediaStore.Images.Media.DATE_TAKEN,
-                    MediaStore.Images.Media.DATE_ADDED
-                )
-                val sortOrder = "${MediaStore.Images.Media._ID} DESC"
-
+                var bannerHandled = false
                 try {
-                    contentResolver.query(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        projection,
-                        null,
-                        null,
-                        sortOrder
-                    )?.use { cursor ->
-                        if (!cursor.moveToFirst()) {
+                    Thread.sleep(800L) // MediaStoreの更新を待つ
+
+                    val projection = arrayOf(
+                        MediaStore.Images.Media._ID,
+                        MediaStore.Images.Media.DATA,
+                        MediaStore.Images.Media.DATE_TAKEN,
+                        MediaStore.Images.Media.DATE_ADDED
+                    )
+                    
+                    // Android 14 準拠の Bundle を使った安全な LIMIT クエリ
+                    val bundle = Bundle().apply {
+                        putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Images.Media._ID))
+                        putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                        putInt(ContentResolver.QUERY_ARG_LIMIT, 1)
+                    }
+
+                    writeDebugLog("MediaStoreへクエリ実行開始...")
+                    val cursor = contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, bundle, null)
+
+                    if (cursor == null) {
+                        writeDebugLog("⚠ エラー: Cursorがnullを返しました (プロバイダ異常)")
+                        showHudBanner("⚠ 失敗: データベース応答なし", false)
+                        bannerHandled = true
+                        return
+                    }
+
+                    cursor.use { c ->
+                        if (!c.moveToFirst()) {
+                            writeDebugLog("⚠ エラー: 画像レコードが0件です")
                             showHudBanner("⚠ 失敗: 画像情報が見つかりません", false)
+                            bannerHandled = true
                             return
                         }
 
-                        val filePath = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)) ?: ""
-                        val dateTaken = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN))
-                        val dateAddedSec = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED))
+                        val filePath = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)) ?: ""
+                        val dateTaken = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN))
+                        val dateAddedSec = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED))
+
+                        writeDebugLog("対象ファイル特定: $filePath")
 
                         if (!filePath.contains("DCIM", ignoreCase = true)) {
-                            mainHandler.post(hideBannerRunnable)
+                            writeDebugLog("スキップ: DCIM外の画像のため処理しません")
                             return
                         }
 
                         if (processedPaths.contains(filePath)) {
-                            mainHandler.post(hideBannerRunnable)
+                            writeDebugLog("スキップ: すでに処理済みのファイルです")
                             return
                         }
 
                         val file = File(filePath)
+                        writeDebugLog("ファイルの現像待ち(安定化)を開始...")
                         if (!waitForFileStable(file)) {
+                            writeDebugLog("⚠ エラー: 現像待ちタイムアウト")
                             showHudBanner("⚠ 失敗: 画像の現像待ちタイムアウト", false)
+                            bannerHandled = true
                             return
                         }
 
                         if (!file.canWrite()) {
+                            writeDebugLog("⚠ エラー: ファイルの書き込み権限がありません")
                             showHudBanner("⚠ 失敗: ファイル書き込み権限なし", false)
+                            bannerHandled = true
                             return
                         }
 
                         val effectiveTimestamp = if (dateTaken > 0L) dateTaken else dateAddedSec * 1000L
+                        writeDebugLog("Exif書き込み・照合処理へ移行 (Timestamp: $effectiveTimestamp)")
                         writeAndVerifyGeotag(file, effectiveTimestamp)
+                        bannerHandled = true
                     }
                 } catch (e: Exception) {
+                    writeDebugLog("⚠ 例外発生: ${e.javaClass.simpleName} - ${e.message}")
                     Log.e(TAG, "画像検知処理エラー", e)
                     showHudBanner("⚠ 失敗: クエリエラー (${e.javaClass.simpleName})", false)
+                    bannerHandled = true
+                } finally {
+                    // どんな理由で終了しても、バナーが更新されていなければ必ず非表示にする
+                    if (!bannerHandled) {
+                        mainHandler.post(hideBannerRunnable)
+                    }
                 }
             }
 
@@ -561,7 +607,8 @@ jobs:
                 val start = System.currentTimeMillis()
                 while (System.currentTimeMillis() - start < maxWaitMs) {
                     val size = if (file.exists()) file.length() else -1L
-                    if (size > 50_000L && size == lastSize) {
+                    // 50,000L縛りを撤廃し、ファイルが存在してサイズが安定していればOKとする
+                    if (size > 0L && size == lastSize) {
                         stableCount++
                         if (stableCount >= 2) return true
                     } else {
@@ -573,43 +620,11 @@ jobs:
                 return false
             }
 
-            private fun appendToFileLog(targetDir: File?, lines: List<String>) {
-                try {
-                    val dir = targetDir ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
-                    if (!dir.exists()) dir.mkdirs()
-                    val logFile = File(dir, "gps_sync.log")
-                    val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-                    
-                    val sb = StringBuilder()
-                    for (line in lines) {
-                        sb.append("[$timeStr] ").append(line).append("\n")
-                    }
-                    logFile.appendText(sb.toString())
-
-                    MediaScannerConnection.scanFile(
-                        applicationContext,
-                        arrayOf(logFile.absolutePath),
-                        arrayOf("text/plain")
-                    ) { _, _ -> }
-                } catch (e: Exception) {
-                    Log.e(TAG, "ログファイル書き込み失敗", e)
-                }
-            }
-
             private fun writeAndVerifyGeotag(file: File, dateTaken: Long) {
-                val logLines = mutableListOf<String>()
-                val targetDir = file.parentFile
-
-                fun trace(msg: String) {
-                    Log.i(TAG, msg)
-                    logLines.add(msg)
-                }
-
                 val snapshot = gpsLog.toList()
                 if (snapshot.isEmpty()) {
                     showHudBanner("⚠ 失敗: 生GPSログが空です", false)
-                    trace("失敗: 生GPSログが空です")
-                    appendToFileLog(targetDir, logLines)
+                    writeDebugLog("失敗: 生GPSログが空です")
                     return
                 }
 
@@ -623,20 +638,18 @@ jobs:
 
                 if (record == null || abs(record.timeMs - dateTaken) > 30_000) {
                     showHudBanner("⚠ 失敗: 撮影時刻の生GPSログなし", false)
-                    trace("失敗: 撮影時刻の生GPSログなし (dateTaken=$dateTaken)")
-                    appendToFileLog(targetDir, logLines)
+                    writeDebugLog("失敗: 撮影時刻の生GPSログなし (dateTaken=$dateTaken)")
                     return
                 }
 
                 val beforeExif = try { ExifInterface(file.absolutePath) } catch (e: Exception) { null }
                 val beforeLatLon = beforeExif?.latLong
 
-                trace("=== 同期試行 ===")
-                trace("対象ファイル: ${file.absolutePath}")
-                trace("撮影時刻: $dateTaken / 使用ログ数: ${nearWindow.size} / 静止判定: $usedStationary")
-                trace("書き込み前Exif座標: ${beforeLatLon?.get(0)}, ${beforeLatLon?.get(1)}")
-                trace("書き込む座標: lat=${record.lat}, lon=${record.lon}, acc=${record.acc}")
-                trace("衛星: $satellitesUsed/$satellitesTotal")
+                writeDebugLog("=== 同期試行 ===")
+                writeDebugLog("撮影時刻: $dateTaken / 使用ログ数: ${nearWindow.size} / 静止判定: $usedStationary")
+                writeDebugLog("書き込み前Exif座標: ${beforeLatLon?.get(0)}, ${beforeLatLon?.get(1)}")
+                writeDebugLog("書き込む座標: lat=${record.lat}, lon=${record.lon}, acc=${record.acc}")
+                writeDebugLog("衛星: $satellitesUsed/$satellitesTotal")
 
                 try {
                     val exif = ExifInterface(file.absolutePath)
@@ -648,7 +661,7 @@ jobs:
                     val verifyExif = ExifInterface(file.absolutePath)
                     val afterLatLon = verifyExif.latLong
 
-                    trace("書き込み後Exif座標: ${afterLatLon?.get(0)}, ${afterLatLon?.get(1)}")
+                    writeDebugLog("書き込み後Exif座標: ${afterLatLon?.get(0)}, ${afterLatLon?.get(1)}")
 
                     val actuallyChanged = beforeLatLon == null ||
                         abs(beforeLatLon[0] - (afterLatLon?.get(0) ?: 0.0)) > 0.00001 ||
@@ -658,7 +671,7 @@ jobs:
                         abs(afterLatLon[0] - record.lat) < 0.0001 &&
                         abs(afterLatLon[1] - record.lon) < 0.0001
 
-                    trace("値の変化: $actuallyChanged / 意図した値と一致: $isVerified")
+                    writeDebugLog("値の変化: $actuallyChanged / 意図した値と一致: $isVerified")
 
                     if (isVerified) {
                         processedPaths.add(file.absolutePath)
@@ -671,18 +684,17 @@ jobs:
                         val tag = if (actuallyChanged) "変化あり" else "変化なし(元々同じ値)"
                         val sampleCountText = if (usedStationary) "(${nearWindow.size}点平均)" else "(1点)"
                         val summary = "✓ 完了[$tag]: ±${record.acc.toInt()}m $sampleCountText"
-                        trace("結果: 成功 ($summary)")
+                        
+                        writeDebugLog("結果: 成功 ($summary)")
                         showHudBanner(summary, true)
                     } else {
-                        trace("結果: 失敗 (書き込み後の照合に不一致)")
+                        writeDebugLog("結果: 失敗 (書き込み後の照合に不一致)")
                         showHudBanner("⚠ 失敗: 書き込み後の照合に不一致", false)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Exif書き込み例外", e)
-                    trace("結果: 例外発生 (${e.javaClass.simpleName}: ${e.message})")
+                    writeDebugLog("結果: 例外発生 (${e.javaClass.simpleName}: ${e.message})")
                     showHudBanner("⚠ 失敗: ${e.javaClass.simpleName}", false)
-                } finally {
-                    appendToFileLog(targetDir, logLines)
                 }
             }
 
