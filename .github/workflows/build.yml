@@ -66,8 +66,8 @@ jobs:
                 applicationId = "com.example.gpsoverlay"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 18
-                versionName = "3.3"
+                versionCode = 19
+                versionName = "3.4"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -181,6 +181,7 @@ jobs:
             <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
             <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
             <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+            <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
             <application
                 android:label="GPS Overlay"
@@ -373,7 +374,7 @@ jobs:
                 startNotification()
                 initOverlay()
                 initBanner()
-                writeDebugLog("=== GPS Overlay サービス起動 (v3.3) ===")
+                writeDebugLog("=== GPS Overlay サービス起動 (v3.4) ===")
                 startLocationUpdates()
                 setupImageObserver()
             }
@@ -381,16 +382,26 @@ jobs:
             private fun writeDebugLog(message: String) {
                 Log.i(TAG, message)
                 try {
-                    val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
-                    if (!dir.exists()) dir.mkdirs()
-                    val logFile = File(dir, "gps_sync.log")
                     val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-                    logFile.appendText("[$timeStr] $message\n")
-                    
+                    val logLine = "[$timeStr] $message\n"
+
+                    // 1. Cameraフォルダへの書き込み (拡張子をtxtに変更)
+                    val cameraDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
+                    if (!cameraDir.exists()) cameraDir.mkdirs()
+                    val cameraLog = File(cameraDir, "gps_sync_log.txt")
+                    try { cameraLog.appendText(logLine) } catch (e: Exception) { Log.e(TAG, "Camera Dir Write Error", e) }
+
+                    // 2. Downloadフォルダへの書き込み (最も確実な安全地帯)
+                    val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    if (!downloadDir.exists()) downloadDir.mkdirs()
+                    val downloadLog = File(downloadDir, "gps_sync_log.txt")
+                    try { downloadLog.appendText(logLine) } catch (e: Exception) { Log.e(TAG, "Download Dir Write Error", e) }
+
+                    // メディアスキャンでPCやファイルアプリに即時反映
                     MediaScannerConnection.scanFile(
                         applicationContext,
-                        arrayOf(logFile.absolutePath),
-                        arrayOf("text/plain")
+                        arrayOf(cameraLog.absolutePath, downloadLog.absolutePath),
+                        arrayOf("text/plain", "text/plain")
                     ) { _, _ -> }
                 } catch (e: Exception) {
                     Log.e(TAG, "ログ書き込み失敗", e)
@@ -641,7 +652,6 @@ jobs:
                 return false
             }
 
-            // ★改良：重心ベースのジッター統計を算出
             private fun jitterStats(samples: List<GpsRecord>): Pair<Float, Float> {
                 var latSum = 0.0; var lonSum = 0.0
                 for (s in samples) { latSum += s.lat; lonSum += s.lon }
@@ -668,10 +678,8 @@ jobs:
                     return
                 }
 
-                // 窓を±4秒（計8秒間）に適正化
                 val nearWindow = snapshot.filter { abs(it.timeMs - dateTaken) < 4_000 }
                 
-                // 重心ベースで静止判定（窓内の全点が重心から半径6m以内に収まっているか）
                 val isStat = if (nearWindow.size >= 2) {
                     val (maxDist, rms) = jitterStats(nearWindow)
                     val stat = maxDist < 6.0f
